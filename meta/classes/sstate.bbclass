@@ -105,6 +105,7 @@ SSTATE_SIG_KEY ?= ""
 SSTATE_SIG_PASSPHRASE ?= ""
 # Whether to verify the GnUPG signatures when extracting sstate archives
 SSTATE_VERIFY_SIG ?= "0"
+SSTATE_VERIFY_SIG_MANIFEST ?= "0"
 
 SSTATE_HASHEQUIV_METHOD ?= "oe.sstatesig.OEOuthashBasic"
 SSTATE_HASHEQUIV_METHOD[doc] = "The fully-qualified function used to calculate \
@@ -337,6 +338,7 @@ sstate_install[vardeps] += "${SSTATEPOSTINSTFUNCS}"
 
 def sstate_installpkg(ss, d):
     from oe.gpg_sign import get_signer
+    from oe.sha256sum_check import get_class
 
     sstateinst = d.expand("${WORKDIR}/sstate-install-%s/" % ss['task'])
     d.setVar("SSTATE_CURRTASK", ss['task'])
@@ -354,14 +356,23 @@ def sstate_installpkg(ss, d):
 
     d.setVar('SSTATE_INSTDIR', sstateinst)
 
+    if bb.utils.to_boolean(d.getVar("SSTATE_VERIFY_SIG_MANIFEST"), False):
+        pkg_to_check = sstatepkg + '.manifest.sig'
+    else:
+        pkg_to_check = sstatepkg + '.sig'
+
     if bb.utils.to_boolean(d.getVar("SSTATE_VERIFY_SIG"), False):
-        if not os.path.isfile(sstatepkg + '.sig'):
-            bb.warn("No signature file for sstate package %s, skipping acceleration..." % sstatepkg)
+        if not os.path.isfile(pkg_to_check):
+            bb.warn("No signature file for sstate package %s, skipping acceleration..." % pkg_to_check)
             return False
         signer = get_signer(d, 'local')
-        if not signer.verify(sstatepkg + '.sig'):
-            bb.warn("Cannot verify signature on sstate package %s, skipping acceleration..." % sstatepkg)
+        if not signer.verify(pkg_to_check):
+            bb.warn("Cannot verify signature on sstate package %s, skipping acceleration..." % pkg_to_check)
             return False
+        if bb.utils.to_boolean(d.getVar("SSTATE_VERIFY_SIG_MANIFEST"), False):
+            shacheck = get_class(d)
+            if not shacheck.verify(sstatepkg + '.manifest'):
+                return False
 
     # Empty sstateinst directory, ensure its clean
     if os.path.exists(sstateinst):
@@ -730,7 +741,11 @@ def pstaging_fetch(sstatefetch, d):
     uris = ['file://{0};downloadfilename={0}'.format(sstatefetch),
             'file://{0}.siginfo;downloadfilename={0}.siginfo'.format(sstatefetch)]
     if bb.utils.to_boolean(d.getVar("SSTATE_VERIFY_SIG"), False):
-        uris += ['file://{0}.sig;downloadfilename={0}.sig'.format(sstatefetch)]
+        if bb.utils.to_boolean(d.getVar("SSTATE_VERIFY_SIG_MANIFEST"), False):
+            uris += ['file://{0}.manifest.sig;downloadfilename={0}.manifest.sig'.format(sstatefetch)]
+            uris += ['file://{0}.manifest;downloadfilename={0}.manifest'.format(sstatefetch)]
+        else:
+            uris += ['file://{0}.sig;downloadfilename={0}.sig'.format(sstatefetch)]
 
     for srcuri in uris:
         localdata.setVar('SRC_URI', srcuri)
@@ -822,14 +837,23 @@ sstate_create_package () {
 
 python sstate_sign_package () {
     from oe.gpg_sign import get_signer
-
+    from oe.sha256sum_check import get_class
 
     signer = get_signer(d, 'local')
+    shacheck = get_class(d)
     sstate_pkg = d.getVar('SSTATE_PKG')
-    if os.path.exists(sstate_pkg + '.sig'):
-        os.unlink(sstate_pkg + '.sig')
-    signer.detach_sign(sstate_pkg, d.getVar('SSTATE_SIG_KEY', False), None,
-                       d.getVar('SSTATE_SIG_PASSPHRASE'), armor=False)
+
+    if bb.utils.to_boolean(d.getVar("SSTATE_VERIFY_SIG_MANIFEST"), False):
+        shacheck.generate_manifest(sstate_pkg)
+        sig_file = sstate_pkg + '.manifest'
+    else:
+        bb.error("Wrong branch")
+        sig_file = sstate_pkg
+
+    if os.path.exists(sig_file + '.sig'):
+        os.unlink(sig_file + '.sig')
+    signer.detach_sign(sig_file, d.getVar('SSTATE_SIG_KEY', False), None,
+                    d.getVar('SSTATE_SIG_PASSPHRASE'), armor=False)
 }
 
 python sstate_report_unihash() {
@@ -851,6 +875,8 @@ sstate_unpack_package () {
 	# Use "! -w ||" to return true for read only files
 	[ ! -w ${SSTATE_PKG} ] || touch --no-dereference ${SSTATE_PKG}
 	[ ! -w ${SSTATE_PKG}.sig ] || [ ! -e ${SSTATE_PKG}.sig ] || touch --no-dereference ${SSTATE_PKG}.sig
+	[ ! -w ${SSTATE_PKG}.manifest ] || [ ! -e ${SSTATE_PKG}.manifest ] || touch --no-dereference ${SSTATE_PKG}.manifest
+	[ ! -w ${SSTATE_PKG}.manifest.sig ] || [ ! -e ${SSTATE_PKG}.manifest.sig ] || touch --no-dereference ${SSTATE_PKG}.manifest.sig
 	[ ! -w ${SSTATE_PKG}.siginfo ] || [ ! -e ${SSTATE_PKG}.siginfo ] || touch --no-dereference ${SSTATE_PKG}.siginfo
 }
 

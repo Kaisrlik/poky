@@ -96,7 +96,7 @@ class LocalSigner(object):
 
         except OSError as e:
             bb.error("OS error (%s): %s" % (e.errno, e.strerror))
-            raise Exception("Failed to sign '%s" % input_file)
+            raise Exception("Failed to sign '%s'" % input_file)
 
 
     def get_gpg_version(self):
@@ -116,8 +116,10 @@ class LocalSigner(object):
             cmd += ["--homedir", self.gpg_path]
 
         cmd += [sig_file]
-        status = subprocess.call(cmd)
-        ret = False if status else True
+        job = subprocess.Popen(cmd, stderr=subprocess.PIPE)
+        if job.returncode:
+            bb.fatal("GPG verify exited with code %d: %s" % (job.returncode, job.stderr.decode("utf-8")))
+        ret = False if job.returncode else True
         return ret
 
 
